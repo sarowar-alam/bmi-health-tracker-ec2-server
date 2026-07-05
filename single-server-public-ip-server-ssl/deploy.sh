@@ -224,8 +224,19 @@ log "DNS record submitted — Change ID: ${CHANGE_ID} | Status: ${CHANGE_STATUS}
 # ═══════════════════════════════════════════════════════════════════════════════
 step "Step 10: Set up PostgreSQL database"
 # ═══════════════════════════════════════════════════════════════════════════════
-# Generate a random 32-char password
-DB_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
+# On re-runs reuse the existing password so the running service keeps working;
+# generate a fresh one only on first deploy.
+EXISTING_PASS=""
+if [[ -f "${BACKEND_DIR}/.env" ]]; then
+  EXISTING_PASS=$(grep -oP '(?<=://[^:]+:)[^@]+(?=@localhost)' "${BACKEND_DIR}/.env" 2>/dev/null || true)
+fi
+if [[ -n "${EXISTING_PASS}" ]]; then
+  DB_PASS="${EXISTING_PASS}"
+  info "Re-using existing database password from .env"
+else
+  DB_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 32)
+  info "Generated new database password"
+fi
 
 info "Creating database user '${DB_USER}'..."
 if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1; then
@@ -246,8 +257,13 @@ else
 fi
 
 info "Running migration: 001_create_measurements.sql..."
-sudo -u postgres psql -d "${DB_NAME}" -f "${DB_MIGRATION}" >/dev/null
-log "Migration applied (CREATE TABLE IF NOT EXISTS — safe to re-run)"
+# The postgres system user cannot traverse /home/ubuntu — copy to /tmp first
+MIGRATION_TMP=$(mktemp /tmp/bmi_migration_XXXXXX.sql)
+cp "${DB_MIGRATION}" "${MIGRATION_TMP}"
+chmod 644 "${MIGRATION_TMP}"
+sudo -u postgres psql -d "${DB_NAME}" -f "${MIGRATION_TMP}" >/dev/null
+rm -f "${MIGRATION_TMP}"
+log "Migration applied (CREATE TABLE IF NOT EXISTS — idempotent)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 step "Step 11: Write backend .env"
@@ -426,17 +442,22 @@ log "DNS resolved: ${DOMAIN} → ${PUBLIC_IP}"
 step "Step 16: Obtain SSL certificate (Let's Encrypt via Certbot)"
 # ═══════════════════════════════════════════════════════════════════════════════
 CERTBOT_EMAIL="admin@${DOMAIN#*.}"
-info "Requesting certificate for ${DOMAIN} (email: ${CERTBOT_EMAIL})..."
 
-sudo certbot --nginx \
-  --domain "${DOMAIN}" \
-  --email  "${CERTBOT_EMAIL}" \
-  --non-interactive \
-  --agree-tos \
-  --redirect \
-  || die "Certbot failed.\n  Check: sudo journalctl -u snap.certbot.certbot -n 50\n  Or run manually: sudo certbot --nginx -d ${DOMAIN}"
-
-log "SSL certificate issued for ${DOMAIN}"
+# Skip certificate issuance if a valid cert already exists for this domain
+if sudo certbot certificates 2>/dev/null | grep -q "Domains:.*${DOMAIN}"; then
+  info "Certificate for ${DOMAIN} already exists — skipping issuance"
+  log "Existing certificate retained"
+else
+  info "Requesting certificate for ${DOMAIN} (email: ${CERTBOT_EMAIL})..."
+  sudo certbot --nginx \
+    --domain "${DOMAIN}" \
+    --email  "${CERTBOT_EMAIL}" \
+    --non-interactive \
+    --agree-tos \
+    --redirect \
+    || die "Certbot failed.\n  Check: sudo journalctl -u snap.certbot.certbot -n 50\n  Or run manually: sudo certbot --nginx -d ${DOMAIN}"
+  log "SSL certificate issued for ${DOMAIN}"
+fi
 
 # Verify auto-renewal timer
 if sudo systemctl is-active --quiet snap.certbot.renew.timer 2>/dev/null; then
