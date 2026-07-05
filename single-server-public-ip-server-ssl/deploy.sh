@@ -257,12 +257,18 @@ else
 fi
 
 info "Running migration: 001_create_measurements.sql..."
-# The postgres system user cannot traverse /home/ubuntu — copy to /tmp first
+# Copy to /tmp — postgres system user cannot traverse /home/ubuntu
 MIGRATION_TMP=$(mktemp /tmp/bmi_migration_XXXXXX.sql)
 cp "${DB_MIGRATION}" "${MIGRATION_TMP}"
 chmod 644 "${MIGRATION_TMP}"
-sudo -u postgres psql -d "${DB_NAME}" -f "${MIGRATION_TMP}" >/dev/null
+# Run as bmi_user (TCP connection) so tables are owned by bmi_user, not postgres
+# This prevents permission-denied errors on INSERT/SELECT at runtime
+PGPASSWORD="${DB_PASS}" psql -h 127.0.0.1 -U "${DB_USER}" -d "${DB_NAME}" -f "${MIGRATION_TMP}" >/dev/null
 rm -f "${MIGRATION_TMP}"
+# Safety net for re-runs where migration was previously run as postgres:
+# grant full access to bmi_user in case any objects are postgres-owned
+sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};" >/dev/null
+sudo -u postgres psql -d "${DB_NAME}" -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};" >/dev/null
 log "Migration applied (CREATE TABLE IF NOT EXISTS — idempotent)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -293,7 +299,11 @@ info "Building frontend (Vite production build)..."
 npm run build
 log "Frontend built → ${FRONTEND_DIR}/dist"
 
-# Ensure Nginx (www-data) can read the dist output
+# EC2 Ubuntu sets /home/ubuntu to 750 by default, blocking nginx (www-data).
+# Grant execute (traversal) on every directory in the path to dist/.
+chmod o+x "${HOME}"
+chmod o+x "${APP_DIR}"
+chmod o+x "${FRONTEND_DIR}"
 sudo chmod -R o+rX "${FRONTEND_DIR}/dist"
 
 cd "${APP_DIR}"
@@ -483,11 +493,13 @@ else
 fi
 
 # API endpoint reachable
-API_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "https://${DOMAIN}/api/measurements" 2>/dev/null || echo "000")
+# Note: do NOT use curl -f here — it exits non-zero on 4xx/5xx and the
+# shell's || fallback would append "000" to the real status code.
+API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${DOMAIN}/api/measurements" 2>/dev/null)
 if [[ "${API_STATUS}" == "200" ]]; then
   log "API endpoint reachable (HTTP ${API_STATUS})"
 else
-  warn "API returned HTTP ${API_STATUS} — backend may still be starting"
+  warn "API returned HTTP ${API_STATUS} — check: journalctl -u ${SERVICE_NAME} -n 30"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
