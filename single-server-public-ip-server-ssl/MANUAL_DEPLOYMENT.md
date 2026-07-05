@@ -126,8 +126,13 @@ ls
 ```bash
 sudo apt-get update -y
 sudo apt-get upgrade -y
-sudo apt-get install -y curl unzip jq dnsutils openssl
+sudo apt-get install -y \
+  curl unzip jq dnsutils openssl \
+  snapd ca-certificates gnupg lsb-release
 ```
+
+> `snapd` is required for Certbot (step 11).  
+> `ca-certificates gnupg lsb-release` are required for the NodeSource repository setup.
 
 **Verify:**
 ```bash
@@ -408,7 +413,53 @@ curl -s http://${PUBLIC_IP}/health
 
 ---
 
-## Step 10 — Create Route53 DNS A Record
+## Step 9 — Install AWS CLI v2
+
+> Required to create the Route53 DNS record. The EC2 IAM role provides credentials — no access keys needed.
+
+```bash
+cd /tmp
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip -q awscliv2.zip
+sudo ./aws/install
+rm -rf awscliv2.zip aws/
+cd ~
+```
+
+**Verify + confirm IAM role is attached:**
+```bash
+aws --version
+# Expected: aws-cli/2.x.x ...
+
+aws route53 get-hosted-zone --id Z1019653XLWIJ02C53P5 --query 'HostedZone.Name' --output text
+# Expected: ostaddevops.click.
+# If this fails: check the IAM role is attached to the instance (Step 2)
+```
+
+---
+
+## Step 10 — Configure OS Firewall (ufw)
+
+> AWS security groups control external traffic, but Ubuntu’s `ufw` adds a second layer of defence.
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 'Nginx Full'   # opens ports 80 and 443
+sudo ufw --force enable
+sudo ufw status
+```
+
+**Expected output:**
+```
+To                         Action      From
+--                         ------      ----
+OpenSSH                    ALLOW       Anywhere
+Nginx Full                 ALLOW       Anywhere
+```
+
+---
+
+## Step 11 — Create Route53 DNS A Record
 
 ```bash
 PUBLIC_IP=$(curl -sf \
@@ -445,7 +496,7 @@ watch -n 10 "dig +short bmi.ostaddevops.click @8.8.8.8"
 
 ---
 
-## Step 11 — Install Certbot
+## Step 12 — Install Certbot
 
 ```bash
 sudo snap install core
@@ -459,7 +510,7 @@ certbot --version
 
 ---
 
-## Step 12 — Obtain SSL Certificate
+## Step 13 — Obtain SSL Certificate
 
 ```bash
 sudo certbot --nginx \
@@ -490,7 +541,7 @@ sudo systemctl status snap.certbot.renew.timer
 
 ---
 
-## Step 13 — Full End-to-End Verification
+## Step 14 — Full End-to-End Verification
 
 ```bash
 # 1. HTTPS health check
