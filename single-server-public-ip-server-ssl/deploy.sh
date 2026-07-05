@@ -30,7 +30,7 @@ step() { echo -e "\n${BOLD}${BLUE}━━ $* ━━━━━━━━━━━━
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 HOSTED_ZONE_ID="Z1019653XLWIJ02C53P5"
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="${APP_DIR}/backend"
 FRONTEND_DIR="${APP_DIR}/frontend"
 DB_MIGRATION="${APP_DIR}/database/migrations/001_create_measurements.sql"
