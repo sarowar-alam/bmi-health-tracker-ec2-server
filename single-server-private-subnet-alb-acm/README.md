@@ -23,7 +23,7 @@ Internet (HTTPS 443 / HTTP 80)
                     ▼
 ┌────────────────────────────────────────────────┐
 │  EC2 t3.medium — Private Subnet                │
-│  No public IP — internet via NAT Gateway       │
+│  No public IP — No SSH — No bastion            │
 │                                                │
 │  ┌──────────┐  ┌──────────────┐  ┌──────────┐  │
 │  │  Nginx   │→ │  Express.js  │→ │PostgreSQL│  │
@@ -33,6 +33,9 @@ Internet (HTTPS 443 / HTTP 80)
          │
          ▼
 Route 53: bmi.ostaddevops.click  (ALIAS → ALB DNS)
+
+Admin / DevOps access (no SSH, no bastion, no port 22):
+  AWS Console / CLI → SSM Service → VPC Endpoint → EC2 (private)
 
 Certificate flow:
   Let's Encrypt (DNS-01 via Route53) → cert.pem → ACM import → ALB HTTPS listener
@@ -48,6 +51,7 @@ Certificate flow:
 | Challenge method | HTTP-01 (port 80 public) | DNS-01 (Route53 TXT record) |
 | Route53 record | A record → EC2 IP | ALIAS record → ALB DNS |
 | SSL renewal | certbot auto-renew on server | certbot renew → redeploy hook re-imports to ACM |
+| **Server access** | **SSH (port 22, public IP)** | **SSM Session Manager (no SSH, no port 22, no bastion)** |
 
 ---
 
@@ -60,6 +64,7 @@ Certificate flow:
 | Public subnets | Two subnets in **different AZs** — required by ALB |
 | NAT Gateway | In a public subnet; routes outbound internet traffic from private subnet |
 | Internet Gateway | Attached to VPC |
+| SSM Agent | Pre-installed on Ubuntu 18.04+ AMIs — no manual setup needed |
 | Domain | `bmi.ostaddevops.click` |
 | Hosted Zone ID | `Z1019653XLWIJ02C53P5` |
 
@@ -72,13 +77,14 @@ Certificate flow:
    - **AMI**: Ubuntu Server 26.04 LTS (64-bit x86)
    - **Instance type**: `t3.medium`
    - **Network**: select your VPC, **private subnet**, disable "Auto-assign public IP"
-   - **Key pair**: create/select one (for SSH via bastion or SSM)
+   - **Key pair**: select **"Proceed without a key pair"** — SSM Session Manager is the only access method
 3. **Security group** — create `bmi-ec2-sg` with:
 
-| Type | Protocol | Port | Source |
-|---|---|---|---|
-| SSH | TCP | 22 | Your bastion SG or `0.0.0.0/0` (tighten later) |
-| HTTP | TCP | 80 | `bmi-alb-sg` (add after ALB SG is created) |
+| Type | Protocol | Port | Source | Why |
+|---|---|---|---|---|
+| HTTP | TCP | 80 | `bmi-alb-sg` (add after ALB SG created) | ALB → Nginx |
+
+> **No SSH rule (port 22).** SSM Session Manager replaces SSH entirely — the EC2 instance is fully managed without any open inbound ports from the internet or a bastion host.
 
 4. **Storage**: 20 GiB gp3
 5. **IAM instance profile**: attach `bmi-ec2-role` (see Step 2)
@@ -92,7 +98,9 @@ Certificate flow:
 
 1. **IAM → Roles → Create role**
 2. Trusted entity: **EC2**
-3. Attach managed policy: `AmazonSSMManagedInstanceCore`
+3. Attach managed policy: **`AmazonSSMManagedInstanceCore`**
+   - This enables SSM Session Manager (browser/CLI shell), SSM Run Command, and Patch Manager
+   - The SSM agent (pre-installed on Ubuntu) uses this policy to register with the SSM service and accept sessions
 4. Name: `bmi-ec2-role`
 5. Create role
 
@@ -185,17 +193,108 @@ Add inline policy `bmi-alb-acm-access`:
 
 **EC2 → Instances → select instance → Actions → Security → Modify IAM role → bmi-ec2-role**
 
+**Verify SSM can see the instance:**
+```bash
+aws ssm describe-instance-information \
+  --query 'InstanceInformationList[?InstanceId==`<your-instance-id>`].[InstanceId,PingStatus,PlatformName]' \
+  --output table
+# Expected: PingStatus = Online
+```
+> It may take 2–3 minutes after role attachment for the SSM agent to register.
+
 ---
 
-## Step 3 — Connect to the Server
+## Step 2b — SSM VPC Endpoints (Recommended)
 
-Since the instance has no public IP, connect via **SSM Session Manager**:
+By default, SSM traffic from the private subnet goes **out through the NAT Gateway** to reach AWS SSM endpoints. VPC Endpoints keep all SSM traffic **within the VPC** — faster, cheaper, and more secure.
 
-1. **EC2 → Instances** → select → **Connect → Session Manager → Connect**
+Create three **Interface VPC Endpoints** in your private subnet:
 
-Or via SSH through a bastion:
+| Service | Endpoint name |
+|---|---|
+| Systems Manager | `com.amazonaws.REGION.ssm` |
+| SSM Messages | `com.amazonaws.REGION.ssmmessages` |
+| EC2 Messages | `com.amazonaws.REGION.ec2messages` |
+
+**In the AWS Console** (repeat for each):
+1. **VPC → Endpoints → Create endpoint**
+2. **Service category**: AWS services
+3. **Service name**: search and select the endpoint above
+4. **VPC**: your VPC
+5. **Subnets**: select your **private subnets**
+6. **Security group**: create/select one that allows **HTTPS (443) inbound from the EC2 security group**
+7. **Policy**: Full access
+
+**Or via AWS CLI:**
 ```bash
-ssh -J ubuntu@<bastion-ip> ubuntu@<private-ip>
+REGION="ap-south-1"
+VPC_ID="vpc-xxxxxxxxx"
+SUBNET_ID="subnet-xxxxxxxxx"  # your private subnet
+SG_ID="sg-xxxxxxxxx"           # EC2 security group
+
+for SVC in ssm ssmmessages ec2messages; do
+  aws ec2 create-vpc-endpoint \
+    --vpc-id              "${VPC_ID}" \
+    --vpc-endpoint-type   Interface \
+    --service-name        "com.amazonaws.${REGION}.${SVC}" \
+    --subnet-ids          "${SUBNET_ID}" \
+    --security-group-ids  "${SG_ID}" \
+    --private-dns-enabled
+  echo "Created: ${SVC}"
+done
+```
+
+> Without VPC Endpoints, SSM still works (via NAT Gateway) but every session byte is billed as NAT Gateway data processing.
+
+---
+
+## Step 3 — Connect to the Server (SSM Session Manager)
+
+There is **no SSH, no key pair, no bastion host**. All server access is via AWS Systems Manager Session Manager. The EC2 instance has no inbound port 22 — it is unreachable from the internet entirely.
+
+### Option A — AWS Management Console
+
+1. **EC2 → Instances** → select your instance
+2. **Connect** → **Session Manager** tab → **Connect**
+3. A browser-based shell opens directly — no credentials needed
+
+### Option B — AWS CLI
+
+```bash
+# Install Session Manager plugin first (once)
+# https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
+
+INSTANCE_ID="i-0abc1234567890def"
+
+aws ssm start-session --target "${INSTANCE_ID}"
+# Opens an interactive shell on the EC2 instance
+```
+
+### Option C — SSH over SSM (for SCP / SFTP / port forwarding)
+
+Add this to your local `~/.ssh/config` to tunnel SSH through SSM:
+
+```
+Host i-* mi-*
+  ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p'"
+```
+
+Then connect as normal:
+```bash
+ssh ubuntu@i-0abc1234567890def
+```
+
+> This requires the `AmazonSSMManagedInstanceCore` policy on the instance role and the Session Manager plugin installed locally.
+
+### Verify SSM connectivity before deploying
+
+```bash
+# From your local machine — confirm instance is online in SSM
+aws ssm describe-instance-information \
+  --filters "Key=InstanceIds,Values=i-0abc1234567890def" \
+  --query 'InstanceInformationList[0].{ID:InstanceId,Status:PingStatus,Platform:PlatformName}' \
+  --output table
+# Expected: PingStatus = Online
 ```
 
 ---

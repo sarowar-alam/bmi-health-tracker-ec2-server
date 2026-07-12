@@ -220,12 +220,12 @@ log "$(certbot --version 2>&1)"
 step "Step 10: Configure firewall (ufw)"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Private subnet: only allow port 80 from within the VPC (ALB traffic).
-# The ALB security group enforces internet-facing access control.
+# Port 22 (SSH) is intentionally NOT opened — SSM Session Manager is the
+# only access method. The EC2 security group has no port 22 inbound rule.
 if command -v ufw &>/dev/null; then
-  sudo ufw allow OpenSSH                             >/dev/null 2>&1 || true
   sudo ufw allow from "${VPC_CIDR}" to any port 80  >/dev/null 2>&1 || true
   sudo ufw --force enable                            >/dev/null 2>&1 || true
-  log "Firewall: SSH open; port 80 restricted to VPC CIDR (${VPC_CIDR})"
+  log "Firewall: port 80 restricted to VPC CIDR (${VPC_CIDR}); SSH disabled (SSM only)"
 else
   warn "ufw not found — relying on EC2 security group"
 fi
