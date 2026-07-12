@@ -470,22 +470,38 @@ EXISTING_CERT_ARN=$(aws acm list-certificates \
   --output text 2>/dev/null || true)
 
 if [[ -n "${EXISTING_CERT_ARN}" && "${EXISTING_CERT_ARN}" != "None" ]]; then
-  info "Updating existing ACM certificate: ${EXISTING_CERT_ARN}"
-  CERT_ARN=$(aws acm import-certificate \
-    --certificate-arn   "${EXISTING_CERT_ARN}" \
-    --certificate       "fileb://${CERT_TMP}/cert.pem" \
-    --private-key       "fileb://${CERT_TMP}/privkey.pem" \
-    --certificate-chain "fileb://${CERT_TMP}/chain.pem" \
-    --region            "${REGION}" \
-    --query 'CertificateArn' --output text)
-  log "ACM certificate updated: ${CERT_ARN}"
+  info "Existing ACM certificate found: ${EXISTING_CERT_ARN}"
+  # AWS requires the replacement cert to have the same key algorithm.
+  # Let's Encrypt now defaults to ECDSA; older certs may be RSA.
+  # Try in-place update first; fall back to a new import if algorithms differ.
+  if CERT_ARN=$(aws acm import-certificate \
+      --certificate-arn   "${EXISTING_CERT_ARN}" \
+      --certificate       "fileb://${CERT_TMP}/cert.pem" \
+      --private-key       "fileb://${CERT_TMP}/privkey.pem" \
+      --certificate-chain "fileb://${CERT_TMP}/chain.pem" \
+      --region            "${REGION}" \
+      --query 'CertificateArn' --output text 2>/dev/null); then
+    log "ACM certificate updated in-place: ${CERT_ARN}"
+  else
+    warn "In-place update failed — key algorithm mismatch (RSA vs ECDSA)"
+    warn "Importing as a new ACM certificate..."
+    CERT_ARN=$(aws acm import-certificate \
+      --certificate       "fileb://${CERT_TMP}/cert.pem" \
+      --private-key       "fileb://${CERT_TMP}/privkey.pem" \
+      --certificate-chain "fileb://${CERT_TMP}/chain.pem" \
+      --region            "${REGION}" \
+      --query 'CertificateArn' --output text) \
+      || die "ACM import failed. Check IAM role has acm:ImportCertificate."
+    log "New ACM certificate imported: ${CERT_ARN}"
+  fi
 else
   CERT_ARN=$(aws acm import-certificate \
     --certificate       "fileb://${CERT_TMP}/cert.pem" \
     --private-key       "fileb://${CERT_TMP}/privkey.pem" \
     --certificate-chain "fileb://${CERT_TMP}/chain.pem" \
     --region            "${REGION}" \
-    --query 'CertificateArn' --output text)
+    --query 'CertificateArn' --output text) \
+    || die "ACM import failed. Check IAM role has acm:ImportCertificate."
   log "ACM certificate imported: ${CERT_ARN}"
 fi
 
@@ -634,7 +650,22 @@ else
 fi
 
 if echo "${EXISTING_PORTS}" | grep -qw "443"; then
-  info "HTTPS listener (443) already exists — skipping"
+  # Listener exists — update cert ARN if it changed (e.g. key algorithm migration)
+  HTTPS_LISTENER_ARN=$(aws elbv2 describe-listeners \
+    --load-balancer-arn "${ALB_ARN}" \
+    --query "Listeners[?Port==\`443\`].ListenerArn" --output text 2>/dev/null || true)
+  CURRENT_CERT=$(aws elbv2 describe-listeners \
+    --listener-arns "${HTTPS_LISTENER_ARN}" \
+    --query 'Listeners[0].Certificates[0].CertificateArn' --output text 2>/dev/null || true)
+  if [[ -n "${HTTPS_LISTENER_ARN}" && "${CURRENT_CERT}" != "${CERT_ARN}" ]]; then
+    info "Updating HTTPS listener cert: ${CURRENT_CERT} -> ${CERT_ARN}..."
+    aws elbv2 modify-listener \
+      --listener-arn  "${HTTPS_LISTENER_ARN}" \
+      --certificates  "CertificateArn=${CERT_ARN}" >/dev/null
+    log "HTTPS listener cert updated"
+  else
+    info "HTTPS listener (443) already exists with correct cert — skipping"
+  fi
 else
   aws elbv2 create-listener \
     --load-balancer-arn "${ALB_ARN}" \
