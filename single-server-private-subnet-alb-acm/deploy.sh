@@ -544,7 +544,7 @@ EXISTING_ALB_SG=$(aws ec2 describe-security-groups \
 if [[ -z "${EXISTING_ALB_SG}" || "${EXISTING_ALB_SG}" == "None" ]]; then
   ALB_SG_ID=$(aws ec2 create-security-group \
     --group-name  "${ALB_SG_NAME}" \
-    --description "BMI Health Tracker ALB — HTTP/HTTPS from internet" \
+    --description "BMI Health Tracker ALB - HTTP/HTTPS from internet" \
     --vpc-id      "${VPC_ID}" \
     --query 'GroupId' --output text)
   aws ec2 authorize-security-group-ingress --group-id "${ALB_SG_ID}" --protocol tcp --port 80  --cidr 0.0.0.0/0
@@ -690,7 +690,7 @@ CHANGE_ID=$(aws route53 change-resource-record-sets \
     --arg  alb_dns  "dualstack.${ALB_DNS}" \
     --arg  alb_zone "${ALB_ZONE_ID}" \
     '{
-      "Comment": "BMI Health Tracker — ALB alias record",
+      "Comment": "BMI Health Tracker - ALB alias record",
       "Changes": [{
         "Action": "UPSERT",
         "ResourceRecordSet": {
