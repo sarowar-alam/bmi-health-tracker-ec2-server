@@ -92,20 +92,19 @@ log "Instance: ${INSTANCE_ID} | Private IP: ${PRIVATE_IP} | AZ: ${AZ} | Region: 
 export AWS_DEFAULT_REGION="${REGION}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-step "Step 2: Detect VPC and EC2 security group"
+step "Step 2: Detect VPC and EC2 security group (via IMDSv2 — no AWS CLI needed)"
 # ═══════════════════════════════════════════════════════════════════════════════
-VPC_ID=$(aws ec2 describe-instances \
-  --instance-ids "${INSTANCE_ID}" \
-  --query 'Reservations[0].Instances[0].VpcId' --output text) \
-  || die "Could not detect VPC ID."
+# All values come from the EC2 metadata service, which is available immediately.
+# This avoids a dependency on AWS CLI, which is installed later in Step 7.
+MAC=$(imds "network/interfaces/macs/")
+MAC="${MAC%/}"   # strip trailing slash
 
-VPC_CIDR=$(aws ec2 describe-vpcs \
-  --vpc-ids "${VPC_ID}" \
-  --query 'Vpcs[0].CidrBlock' --output text)
-
-EC2_SG_ID=$(aws ec2 describe-instances \
-  --instance-ids "${INSTANCE_ID}" \
-  --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text)
+VPC_ID=$(imds "network/interfaces/macs/${MAC}/vpc-id") \
+  || die "Could not read VPC ID from instance metadata."
+VPC_CIDR=$(imds "network/interfaces/macs/${MAC}/vpc-ipv4-cidr-block") \
+  || die "Could not read VPC CIDR from instance metadata."
+EC2_SG_ID=$(imds "network/interfaces/macs/${MAC}/security-group-ids" | head -1) \
+  || die "Could not read security group IDs from instance metadata."
 
 log "VPC: ${VPC_ID} | CIDR: ${VPC_CIDR} | EC2 SG: ${EC2_SG_ID}"
 
