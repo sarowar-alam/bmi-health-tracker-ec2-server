@@ -39,3 +39,7 @@ Thumbs.db
 
 # ── GitHub Copilot workspace instructions (local only) ───────
 .github/copilot-instructions.md
+
+# ── Infrastructure state (environment-specific, not for VCS) ─
+infra_state.json
+setup_infra.log

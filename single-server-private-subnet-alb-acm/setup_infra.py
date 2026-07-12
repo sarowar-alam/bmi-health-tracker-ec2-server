@@ -659,8 +659,9 @@ def teardown(log: logging.Logger) -> None:
         return
 
     session = get_session()
-    ec2 = session.client("ec2")
-    iam = session.client("iam")
+    ec2   = session.client("ec2")
+    elbv2 = session.client("elbv2")
+    iam   = session.client("iam")
 
     log.info("=" * 64)
     log.info("Starting teardown - all tracked resources will be DESTROYED")
@@ -742,6 +743,58 @@ def teardown(log: logging.Logger) -> None:
             _safe_delete(lambda rid=rt_id: ec2.delete_route_table(RouteTableId=rid), f"RT {rt_id}", log)
             state.pop(key, None)
             save_state(state)
+
+    # 6b. Delete ALB resources created by deploy.sh (not tracked in state file).
+    #     These live in the public subnets and block subnet/IGW/VPC deletion.
+    log.info("Checking for ALB/TG resources created by deploy.sh...")
+
+    # Delete ALB listeners, then ALB itself
+    try:
+        albs = elbv2.describe_load_balancers(Names=[ALB_NAME])["LoadBalancers"]
+        if albs:
+            alb_arn = albs[0]["LoadBalancerArn"]
+            listeners = elbv2.describe_listeners(LoadBalancerArn=alb_arn).get("Listeners", [])
+            for lst in listeners:
+                _safe_delete(
+                    lambda l=lst["ListenerArn"]: elbv2.delete_listener(ListenerArn=l),
+                    f"ALB listener {lst['ListenerArn'][-12:]}", log,
+                )
+            _safe_delete(
+                lambda: elbv2.delete_load_balancer(LoadBalancerArn=alb_arn),
+                f"ALB {ALB_NAME}", log,
+            )
+            log.info(f"Waiting for ALB {ALB_NAME} to be fully deleted...")
+            elbv2.get_waiter("load_balancers_deleted").wait(
+                LoadBalancerArns=[alb_arn],
+                WaiterConfig={"Delay": 15, "MaxAttempts": 20},
+            )
+            log.info("ALB deleted")
+        else:
+            log.info(f"ALB {ALB_NAME} not found - skipping")
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "LoadBalancerNotFound":
+            log.warning(f"ALB cleanup: {e.response['Error']['Message']}")
+
+    # Delete target group
+    try:
+        tgs = elbv2.describe_target_groups(Names=[TG_NAME])["TargetGroups"]
+        if tgs:
+            _safe_delete(
+                lambda: elbv2.delete_target_group(TargetGroupArn=tgs[0]["TargetGroupArn"]),
+                f"Target group {TG_NAME}", log,
+            )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "TargetGroupNotFound":
+            log.warning(f"TG cleanup: {e.response['Error']['Message']}")
+
+    # Delete ALB security group (created by deploy.sh, named ALB_SG_NAME)
+    if vpc_id_for_sg := state.get("vpc_id"):
+        alb_sg = _find_sg(ec2, ALB_SG_NAME, vpc_id_for_sg)
+        if alb_sg:
+            _safe_delete(
+                lambda sg=alb_sg: ec2.delete_security_group(GroupId=sg),
+                f"ALB SG {alb_sg} ({ALB_SG_NAME})", log,
+            )
 
     # 7. Delete subnets
     all_subnets = state.get("public_subnet_ids", []) + state.get("private_subnet_ids", [])
