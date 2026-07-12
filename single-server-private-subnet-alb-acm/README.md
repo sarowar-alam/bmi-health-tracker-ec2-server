@@ -1,8 +1,63 @@
 # Manual Deployment Guide — BMI Health Tracker
 ### Private Subnet + Application Load Balancer + ACM Certificate
 
-> This guide mirrors every step that `deploy.sh` automates.
-> Use it to understand the architecture or perform a fully manual deployment.
+> This guide covers **two ways** to deploy:
+> 1. **Automated** — run `deploy.sh` and it handles everything (recommended)
+> 2. **Manual** — follow the step-by-step instructions below to understand each piece
+
+---
+
+## Quick Start — Automated Deployment (`deploy.sh`)
+
+`deploy.sh` is a fully automated, idempotent 27-step script that provisions the entire stack from a fresh private-subnet EC2 instance to a running HTTPS application.
+
+### What it does
+
+| Phase | Steps | What happens |
+|---|---|---|
+| Infrastructure detection | 1–2 | Reads EC2 metadata (instance ID, region, AZ); detects VPC ID, CIDR, and EC2 security group via AWS CLI |
+| Software install | 3–9 | System update, Node.js 22, PostgreSQL, Nginx, AWS CLI v2, Certbot |
+| Firewall | 10 | ufw: port 80 from VPC CIDR only; port 22 intentionally not opened (SSM only) |
+| App setup | 11–15 | DB + migration, `.env`, npm build, Nginx HTTP-only config, systemd service |
+| Certificate | 16–18 | Let's Encrypt DNS-01 via Route53 hooks → import to ACM → auto-renewal deploy hook |
+| AWS networking | 19–24 | ALB SG, EC2 SG update, target group + register, ALB, HTTP+HTTPS listeners, Route53 ALIAS |
+| Validation | 25–27 | Poll ALB active, poll target healthy, 3-point HTTPS end-to-end verify |
+
+### Prerequisites before running the script
+
+- [ ] Private subnet EC2 running Ubuntu 22.04 / 24.04 / 26.04 (no public IP)
+- [ ] NAT Gateway in a public subnet (for outbound internet: npm, apt, AWS CLI, certbot)
+- [ ] IAM role `bmi-ec2-role` attached to the instance with the policies from Step 2 below
+- [ ] Two **public** subnet IDs in **different AZs** (required by ALB)
+- [ ] Connected to the server via **SSM Session Manager** (see Step 3)
+- [ ] Repository cloned on the server
+
+### Usage
+
+```bash
+# 1. Clone the repo on the EC2 instance (via SSM session)
+git clone https://github.com/sarowar-alam/bmi-health-tracker-ec2-server.git
+cd bmi-health-tracker-ec2-server
+
+# 2. Run the script — provide domain and two public subnet IDs
+./single-server-private-subnet-alb-acm/deploy.sh \
+  bmi.ostaddevops.click \
+  subnet-0abc1234567890abc \
+  subnet-0def0987654321fed
+```
+
+### Re-running (idempotent)
+
+Safe to run multiple times. Already-completed steps are skipped:
+
+| Resource | Behaviour on re-run |
+|---|---|
+| Node.js / PostgreSQL / Nginx | Skipped if already installed |
+| DB user / database | Password reused from existing `.env`; migration is `CREATE TABLE IF NOT EXISTS` |
+| Let's Encrypt cert | Skipped if cert directory already exists |
+| ACM certificate | Updated (import replaces the existing cert) |
+| ALB / target group / listeners | Skipped if already exist by name |
+| Route53 ALIAS | UPSERT — updates if ALB DNS changed |
 
 ---
 
