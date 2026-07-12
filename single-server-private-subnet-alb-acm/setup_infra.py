@@ -56,6 +56,10 @@ PRIVATE_SUBNET_2_CIDR = "10.0.12.0/24"
 INSTANCE_TYPE         = "t3.medium"
 AMI_ID                = "ami-01a00762f46d584a1"   # Ubuntu 26.04 LTS ap-south-1
 IAM_ROLE_NAME         = "bmi-ec2-role"
+# Resource names shared with deploy.sh — must stay in sync
+ALB_NAME              = "bmi-health-tracker-alb"
+TG_NAME               = "bmi-health-tracker-tg"
+ALB_SG_NAME           = "bmi-alb-sg"
 PROJECT               = "bmi-health-tracker"
 
 
