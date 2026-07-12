@@ -7,6 +7,132 @@
 
 ---
 
+## Script Overview
+
+This folder contains two complementary automation scripts:
+
+| Script | Language | Run where | Purpose |
+|---|---|---|---|
+| `setup_infra.py` | Python (boto3) | **Local machine** | Creates the AWS networking + EC2 infrastructure *before* deploying the app |
+| `deploy.sh` | Bash | **On the EC2 server** (via SSM) | Installs the app, configures Nginx, gets SSL cert, builds ALB, goes live |
+
+**Correct order:**
+```
+1. Local  → python setup_infra.py --action create    (build VPC, subnets, NAT, EC2)
+2. Server → ./deploy.sh bmi.ostaddevops.click ...    (install app + provision ALB)
+3. Local  → python setup_infra.py --action teardown  (destroy everything when done)
+```
+
+---
+
+## `setup_infra.py` — AWS Infrastructure Provisioner
+
+### What it does
+
+Builds the entire AWS networking and compute foundation from your local machine using boto3 with the `sarowar-ostad` AWS profile. Nothing needs to be pre-created in the console.
+
+### Resources created
+
+| # | Resource | Name / Value | Detail |
+|---|---|---|---|
+| 1 | VPC | `bmi-health-tracker-vpc` | CIDR `10.0.0.0/16`, DNS hostnames + support enabled |
+| 2 | Internet Gateway | `bmi-health-tracker-igw` | Attached to the VPC |
+| 3 | Public Subnet 1 | `bmi-health-tracker-public-subnet-1` | `10.0.1.0/24` — AZ-a, auto-assign public IP |
+| 4 | Public Subnet 2 | `bmi-health-tracker-public-subnet-2` | `10.0.2.0/24` — AZ-b, auto-assign public IP |
+| 5 | Private Subnet 1 | `bmi-health-tracker-private-subnet-1` | `10.0.11.0/24` — AZ-a, no public IP |
+| 6 | Private Subnet 2 | `bmi-health-tracker-private-subnet-2` | `10.0.12.0/24` — AZ-b, no public IP |
+| 7 | Public Route Table | `bmi-health-tracker-public-rt` | `0.0.0.0/0 → IGW`, associated to both public subnets |
+| 8 | Elastic IP | `bmi-health-tracker-nat-eip` | Static IP for the NAT Gateway |
+| 9 | NAT Gateway | `bmi-health-tracker-nat-gw` | 1 regional, public, in public-subnet-1 |
+| 10 | Private Route Table | `bmi-health-tracker-private-rt` | `0.0.0.0/0 → NAT GW`, associated to both private subnets |
+| 11 | VPC Endpoint SG | `bmi-health-tracker-vpce-sg` | Allows HTTPS 443 inbound from `10.0.0.0/16` |
+| 12 | SSM VPC Endpoint | `bmi-health-tracker-vpce-ssm` | Interface type, `com.amazonaws.ap-south-1.ssm` |
+| 13 | SSM Messages Endpoint | `bmi-health-tracker-vpce-ssmmessages` | Interface type, `com.amazonaws.ap-south-1.ssmmessages` |
+| 14 | EC2 Messages Endpoint | `bmi-health-tracker-vpce-ec2messages` | Interface type, `com.amazonaws.ap-south-1.ec2messages` |
+| 15 | EC2 Security Group | `bmi-health-tracker-ec2-sg` | No inbound rules initially — `deploy.sh` adds port 80 from ALB SG |
+| 16 | IAM Role | `bmi-ec2-role` | Trust: EC2 service; Policy: `AmazonSSMManagedInstanceCore` |
+| 17 | IAM Instance Profile | `bmi-ec2-role` | Attached to the role, used by the EC2 instance |
+| 18 | EC2 Instance | `bmi-health-tracker-server` | `t3.medium`, Ubuntu 26.04 (`ami-01a00762f46d584a1`), private-subnet-1, IMDSv2 only, 20 GiB gp3 encrypted |
+
+### State file
+
+Every resource ID is written to `infra_state.json` immediately after creation. Teardown reads this file to know exactly what to delete. The file is excluded from git (`.gitignore`).
+
+```json
+{
+  "vpc_id": "vpc-xxx",
+  "igw_id": "igw-xxx",
+  "public_subnet_ids":  ["subnet-xxx", "subnet-yyy"],
+  "private_subnet_ids": ["subnet-aaa", "subnet-bbb"],
+  "public_rt_id":  "rtb-xxx",
+  "private_rt_id": "rtb-yyy",
+  "eip_allocation_id": "eipalloc-xxx",
+  "nat_gw_id": "nat-xxx",
+  "endpoint_sg_id": "sg-xxx",
+  "endpoint_ids": {"ssm": "vpce-xxx", "ssmmessages": "vpce-yyy", "ec2messages": "vpce-zzz"},
+  "ec2_sg_id": "sg-yyy",
+  "iam_instance_profile_arn": "arn:aws:iam::...",
+  "ec2_instance_id": "i-xxx"
+}
+```
+
+### Prerequisites
+
+- Python 3.9+
+- `pip install boto3`
+- AWS CLI profile `sarowar-ostad` configured in `~/.aws/credentials`
+- IAM user/role for the profile must have permissions to create VPC, EC2, IAM resources
+
+### Usage
+
+```bash
+cd single-server-private-subnet-alb-acm
+
+# Create all infrastructure (~3 minutes for NAT Gateway)
+python setup_infra.py --action create
+
+# Show current state and live EC2 status
+python setup_infra.py --action status
+
+# Destroy everything tracked in infra_state.json
+python setup_infra.py --action teardown
+```
+
+### Idempotency
+
+Re-running `--action create` is safe — each step checks by `Name` tag before creating:
+
+| Resource | Check method |
+|---|---|
+| VPC, IGW, subnets, route tables | `describe_*` filtered by `Name` tag |
+| NAT Gateway | `describe_nat_gateways` filtered by `Name` tag and state `available/pending` |
+| VPC Endpoints | `describe_vpc_endpoints` filtered by `vpc-id` + `service-name` |
+| Security groups | `describe_security_groups` filtered by `Name` tag + VPC ID |
+| EC2 instance | Checks `ec2_instance_id` in state; verifies instance is not `terminated` |
+| IAM role + profile | `get_role` / `get_instance_profile` — creates only if `NoSuchEntity` |
+
+### Teardown order
+
+Teardown runs in strict reverse-dependency order. Each step is wrapped in error handling so a single failure does not abort the rest:
+
+```
+1.  Terminate EC2 instance (wait for terminated state)
+2.  Delete VPC Endpoints (poll until state = deleted)
+3.  Delete security groups (endpoint SG + EC2 SG)
+4.  Delete NAT Gateway (wait ~90s)
+5.  Release Elastic IP
+6.  Delete route tables (disassociate subnets first)
+6b. Delete ALB Listeners → ALB → Target Group → ALB SG  ← deploy.sh resources
+7.  Delete subnets (private first, then public)
+8.  Detach + delete Internet Gateway
+9.  Delete VPC
+10. Warn about IAM role (not auto-deleted — shared resource)
+```
+
+> **Note:** The IAM role `bmi-ec2-role` is intentionally not deleted automatically because it may be reused. Remove manually if no longer needed.
+
+---
+
 ## Quick Start — Automated Deployment (`deploy.sh`)
 
 `deploy.sh` is a fully automated, idempotent 27-step script that provisions the entire stack from a fresh private-subnet EC2 instance to a running HTTPS application.
