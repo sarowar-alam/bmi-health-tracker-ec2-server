@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-setup_infra.py — AWS infrastructure provisioner for BMI Health Tracker
+setup_infra.py - AWS infrastructure provisioner for BMI Health Tracker
 Architecture: Private Subnet + ALB + ACM + SSM Session Manager
 
 Creates:
@@ -8,12 +8,12 @@ Creates:
   - Internet Gateway attached to VPC
   - 2 public subnets  (AZ-a: 10.0.1.0/24, AZ-b: 10.0.2.0/24)
   - 2 private subnets (AZ-a: 10.0.11.0/24, AZ-b: 10.0.12.0/24)
-  - Public route table  (0.0.0.0/0 → IGW)   associated to public subnets
+  - Public route table  (0.0.0.0/0 -> IGW)   associated to public subnets
   - 1 regional NAT Gateway (public, in public-subnet-1) + EIP
-  - Private route table (0.0.0.0/0 → NAT GW) associated to private subnets
+  - Private route table (0.0.0.0/0 -> NAT GW) associated to private subnets
   - Security group for VPC endpoints (HTTPS 443 from VPC CIDR)
   - 3 SSM Interface VPC Endpoints (ssm, ssmmessages, ec2messages)
-  - EC2 security group (port 80 from ALB SG — added by deploy.sh)
+  - EC2 security group (port 80 from ALB SG - added by deploy.sh)
   - IAM role bmi-ec2-role with AmazonSSMManagedInstanceCore + instance profile
   - EC2 t3.medium in private-subnet-1 (Ubuntu 26.04 LTS, IMDSv2, 20 GiB gp3 encrypted)
 
@@ -23,8 +23,8 @@ Usage:
   python setup_infra.py --action status
 
 State:
-  infra_state.json  — tracks all created resource IDs for teardown
-  setup_infra.log   — persistent log file
+  infra_state.json  - tracks all created resource IDs for teardown
+  setup_infra.log   - persistent log file
 
 AWS profile: sarowar-ostad
 Region:      ap-south-1
@@ -69,6 +69,9 @@ def setup_logging() -> logging.Logger:
     root.setLevel(logging.INFO)
 
     sh = logging.StreamHandler(sys.stdout)
+    # Reconfigure stdout to UTF-8 on Windows (cp1252 cannot encode arrows/dashes)
+    if hasattr(sh.stream, 'reconfigure'):
+        sh.stream.reconfigure(encoding='utf-8', errors='replace')
     sh.setFormatter(fmt)
     root.addHandler(sh)
 
@@ -184,7 +187,7 @@ def step_vpc(ec2, log: logging.Logger) -> str:
     name = f"{PROJECT}-vpc"
     existing = _find_vpc(ec2, name)
     if existing:
-        log.info(f"VPC already exists: {existing} — skipping")
+        log.info(f"VPC already exists: {existing} - skipping")
         patch_state("vpc_id", existing)
         return existing
 
@@ -204,7 +207,7 @@ def step_igw(ec2, vpc_id: str, log: logging.Logger) -> str:
     name = f"{PROJECT}-igw"
     existing = _find_igw(ec2, name)
     if existing:
-        log.info(f"IGW already exists: {existing} — skipping")
+        log.info(f"IGW already exists: {existing} - skipping")
         patch_state("igw_id", existing)
         return existing
 
@@ -234,7 +237,7 @@ def step_subnets(ec2, vpc_id: str, log: logging.Logger) -> tuple[list, list]:
         )["AvailabilityZones"]
     ]
     if len(azs) < 2:
-        raise RuntimeError(f"Need ≥ 2 AZs in {REGION}, found: {azs}")
+        raise RuntimeError(f"Need >= 2 AZs in {REGION}, found: {azs}")
     az1, az2 = azs[0], azs[1]
     log.info(f"Using AZs: {az1}, {az2}")
 
@@ -282,7 +285,7 @@ def _ensure_rt_association(ec2, rt_id: str, subnet_id: str, log: logging.Logger)
         log.info(f"  Subnet {subnet_id} already associated with {rt_id}")
         return
     ec2.associate_route_table(RouteTableId=rt_id, SubnetId=subnet_id)
-    log.info(f"  Associated subnet {subnet_id} → RT {rt_id}")
+    log.info(f"  Associated subnet {subnet_id} -> RT {rt_id}")
 
 
 def step_public_rt(ec2, vpc_id: str, igw_id: str, public_subnets: list, log: logging.Logger) -> str:
@@ -297,7 +300,7 @@ def step_public_rt(ec2, vpc_id: str, igw_id: str, public_subnets: list, log: log
         rt_id = r["RouteTable"]["RouteTableId"]
         try:
             ec2.create_route(RouteTableId=rt_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
-            log.info(f"Route 0.0.0.0/0 → IGW added to {rt_id}")
+            log.info(f"Route 0.0.0.0/0 -> IGW added to {rt_id}")
         except ClientError as e:
             if e.response["Error"]["Code"] != "RouteAlreadyExists":
                 raise
@@ -364,7 +367,7 @@ def step_private_rt(ec2, vpc_id: str, nat_gw_id: str, private_subnets: list, log
         rt_id = r["RouteTable"]["RouteTableId"]
         try:
             ec2.create_route(RouteTableId=rt_id, DestinationCidrBlock="0.0.0.0/0", NatGatewayId=nat_gw_id)
-            log.info(f"Route 0.0.0.0/0 → NAT GW added to {rt_id}")
+            log.info(f"Route 0.0.0.0/0 -> NAT GW added to {rt_id}")
         except ClientError as e:
             if e.response["Error"]["Code"] != "RouteAlreadyExists":
                 raise
@@ -388,7 +391,7 @@ def step_endpoint_sg(ec2, vpc_id: str, log: logging.Logger) -> str:
     log.info("Creating VPC endpoint security group...")
     r = ec2.create_security_group(
         GroupName=name,
-        Description="BMI Health Tracker — HTTPS from VPC for SSM endpoints",
+        Description="BMI Health Tracker - HTTPS from VPC for SSM endpoints",
         VpcId=vpc_id,
         TagSpecifications=tagspec("security-group", name),
     )
@@ -448,7 +451,7 @@ def step_ec2_sg(ec2, vpc_id: str, log: logging.Logger) -> str:
     log.info("Creating EC2 security group...")
     r = ec2.create_security_group(
         GroupName=name,
-        Description="BMI Health Tracker EC2 — port 80 from ALB SG only (added by deploy.sh)",
+        Description="BMI Health Tracker EC2 - port 80 from ALB SG only (added by deploy.sh)",
         VpcId=vpc_id,
         TagSpecifications=tagspec("security-group", name),
     )
@@ -477,7 +480,7 @@ def step_iam_role(session: boto3.Session, log: logging.Logger) -> str:
         iam.create_role(
             RoleName=IAM_ROLE_NAME,
             AssumeRolePolicyDocument=trust,
-            Description="BMI Health Tracker EC2 — SSM + Route53 + ACM + ALB",
+            Description="BMI Health Tracker EC2 - SSM + Route53 + ACM + ALB",
             Tags=[{"Key": "Project", "Value": PROJECT}],
         )
         log.info(f"IAM role created: {IAM_ROLE_NAME}")
@@ -504,7 +507,7 @@ def step_iam_role(session: boto3.Session, log: logging.Logger) -> str:
         else:
             raise
 
-    # Add role to profile (max 1 role per profile — LimitExceeded = already added)
+    # Add role to profile (max 1 role per profile - LimitExceeded = already added)
     profile = iam.get_instance_profile(InstanceProfileName=IAM_ROLE_NAME)
     role_in_profile = any(
         r["RoleName"] == IAM_ROLE_NAME
@@ -523,7 +526,7 @@ def step_iam_role(session: boto3.Session, log: logging.Logger) -> str:
     log.info(f"Instance profile ARN: {arn}")
 
     log.warning(
-        "ACTION REQUIRED: add the inline ALB+ACM policy to this role manually — "
+        "ACTION REQUIRED: add the inline ALB+ACM policy to this role manually - "
         "see single-server-private-subnet-alb-acm/README.md Step 2c"
     )
     return arn
@@ -544,7 +547,7 @@ def step_ec2_instance(
                 log.info(f"EC2 instance already exists: {iid} (state: {inst_state})")
                 return iid
         except (ClientError, IndexError, KeyError):
-            log.info("Previous instance not found — creating new")
+            log.info("Previous instance not found - creating new")
 
     log.info(f"Creating EC2 instance (AMI: {AMI_ID}, type: {INSTANCE_TYPE})...")
     log.info("Waiting 15s for IAM instance profile to propagate...")
@@ -568,14 +571,14 @@ def step_ec2_instance(
             },
         }],
         MetadataOptions={
-            "HttpTokens": "required",    # IMDSv2 only — no IMDSv1
+            "HttpTokens": "required",    # IMDSv2 only - no IMDSv1
             "HttpEndpoint": "enabled",
         },
         TagSpecifications=tagspec("instance", f"{PROJECT}-server"),
     )
 
     instance_id = r["Instances"][0]["InstanceId"]
-    log.info(f"Instance launched: {instance_id} — waiting for running state...")
+    log.info(f"Instance launched: {instance_id} - waiting for running state...")
 
     waiter = ec2.get_waiter("instance_running")
     waiter.wait(InstanceIds=[instance_id], WaiterConfig={"Delay": 10, "MaxAttempts": 30})
@@ -646,13 +649,13 @@ def _safe_delete(fn, label: str, log: logging.Logger) -> None:
         fn()
         log.info(f"Deleted: {label}")
     except ClientError as e:
-        log.warning(f"Could not delete {label}: {e.response['Error']['Code']} — {e.response['Error']['Message']}")
+        log.warning(f"Could not delete {label}: {e.response['Error']['Code']} - {e.response['Error']['Message']}")
 
 
 def teardown(log: logging.Logger) -> None:
     state = load_state()
     if not state:
-        log.warning("State file empty or missing — nothing to tear down")
+        log.warning("State file empty or missing - nothing to tear down")
         return
 
     session = get_session()
@@ -660,7 +663,7 @@ def teardown(log: logging.Logger) -> None:
     iam = session.client("iam")
 
     log.info("=" * 64)
-    log.info("Starting teardown — all tracked resources will be DESTROYED")
+    log.info("Starting teardown - all tracked resources will be DESTROYED")
     log.info("=" * 64)
 
     # 1. Terminate EC2 instance
@@ -764,7 +767,7 @@ def teardown(log: logging.Logger) -> None:
         state.pop("vpc_id", None)
         save_state(state)
 
-    # 10. Clean up IAM (optional — warn but don't auto-delete shared roles)
+    # 10. Clean up IAM (optional - warn but do not auto-delete shared roles)
     log.warning(
         f"IAM role '{IAM_ROLE_NAME}' and instance profile were NOT deleted. "
         "Remove manually if no longer needed: "
@@ -779,7 +782,7 @@ def teardown(log: logging.Logger) -> None:
         for k, v in remaining.items():
             log.info(f"  {k}: {v}")
     else:
-        log.info("  (none — all resources destroyed)")
+        log.info("  (none - all resources destroyed)")
     log.info("=" * 64)
 
 
@@ -822,7 +825,7 @@ def show_status(log: logging.Logger) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="BMI Health Tracker — AWS infrastructure provisioner",
+        description="BMI Health Tracker - AWS infrastructure provisioner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Actions:
@@ -853,7 +856,7 @@ Example:
             show_status(log)
     except ClientError as e:
         log.error(
-            f"AWS error: {e.response['Error']['Code']} — {e.response['Error']['Message']}"
+            f"AWS error: {e.response['Error']['Code']} - {e.response['Error']['Message']}"
         )
         sys.exit(1)
     except KeyboardInterrupt:
