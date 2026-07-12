@@ -454,6 +454,15 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 step "Step 17: Import certificate into ACM"
 # ═══════════════════════════════════════════════════════════════════════════════
+# /etc/letsencrypt/live/ is owned by root (mode 0700).
+# The ubuntu user cannot read the cert files directly.
+# Copy to a temp dir owned by the current user before calling aws CLI.
+CERT_TMP=$(mktemp -d /tmp/bmi-cert-import-XXXXXX)
+sudo cp "${CERT_DIR}/cert.pem"    "${CERT_TMP}/"
+sudo cp "${CERT_DIR}/privkey.pem" "${CERT_TMP}/"
+sudo cp "${CERT_DIR}/chain.pem"   "${CERT_TMP}/"
+sudo chown "${USER}:${USER}" "${CERT_TMP}"/*.pem
+
 info "Checking for existing ACM certificate for ${DOMAIN}..."
 EXISTING_CERT_ARN=$(aws acm list-certificates \
   --region "${REGION}" \
@@ -464,21 +473,24 @@ if [[ -n "${EXISTING_CERT_ARN}" && "${EXISTING_CERT_ARN}" != "None" ]]; then
   info "Updating existing ACM certificate: ${EXISTING_CERT_ARN}"
   CERT_ARN=$(aws acm import-certificate \
     --certificate-arn   "${EXISTING_CERT_ARN}" \
-    --certificate       "fileb://${CERT_DIR}/cert.pem" \
-    --private-key       "fileb://${CERT_DIR}/privkey.pem" \
-    --certificate-chain "fileb://${CERT_DIR}/chain.pem" \
+    --certificate       "fileb://${CERT_TMP}/cert.pem" \
+    --private-key       "fileb://${CERT_TMP}/privkey.pem" \
+    --certificate-chain "fileb://${CERT_TMP}/chain.pem" \
     --region            "${REGION}" \
     --query 'CertificateArn' --output text)
   log "ACM certificate updated: ${CERT_ARN}"
 else
   CERT_ARN=$(aws acm import-certificate \
-    --certificate       "fileb://${CERT_DIR}/cert.pem" \
-    --private-key       "fileb://${CERT_DIR}/privkey.pem" \
-    --certificate-chain "fileb://${CERT_DIR}/chain.pem" \
+    --certificate       "fileb://${CERT_TMP}/cert.pem" \
+    --private-key       "fileb://${CERT_TMP}/privkey.pem" \
+    --certificate-chain "fileb://${CERT_TMP}/chain.pem" \
     --region            "${REGION}" \
     --query 'CertificateArn' --output text)
   log "ACM certificate imported: ${CERT_ARN}"
 fi
+
+rm -rf "${CERT_TMP}"
+log "Temp cert files cleaned up"
 
 echo "${CERT_ARN}" | sudo tee "${CERT_ARN_FILE}"        > /dev/null
 echo "${REGION}"   | sudo tee "${CERT_ARN_FILE}.region" > /dev/null
