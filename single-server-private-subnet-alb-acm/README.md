@@ -15,7 +15,7 @@ Internet (HTTPS 443 / HTTP 80)
 ┌────────────────────────────────────────────────┐
 │  Application Load Balancer (internet-facing)   │
 │  Public Subnets — 2 AZs                        │
-│  TLS terminated here — ACM certificate          │
+│  TLS terminated here — ACM certificate         │
 │  HTTP 80 → 301 redirect to HTTPS               │
 │  HTTPS 443 → forwards to Target Group          │
 └───────────────────┬────────────────────────────┘
@@ -25,10 +25,10 @@ Internet (HTTPS 443 / HTTP 80)
 │  EC2 t3.medium — Private Subnet                │
 │  No public IP — internet via NAT Gateway       │
 │                                                │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────┐ │
-│  │  Nginx   │→ │  Express.js  │→ │PostgreSQL│ │
-│  │  :80     │  │  :3000       │  │  :5432   │ │
-│  └──────────┘  └──────────────┘  └──────────┘ │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────┐  │
+│  │  Nginx   │→ │  Express.js  │→ │PostgreSQL│  │
+│  │  :80     │  │  :3000       │  │  :5432   │  │
+│  └──────────┘  └──────────────┘  └──────────┘  │
 └────────────────────────────────────────────────┘
          │
          ▼
@@ -790,9 +790,9 @@ Route 53: bmi.ostaddevops.click ALIAS → ALB DNS (dualstack)
 
 ## Project Lead
 
-**MD Sarowar Alam**
-Lead DevOps Engineer, WPP Production
-📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)
+**MD Sarowar Alam**<br>
+Lead DevOps Engineer, WPP Production<br>
+📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)<br>
 🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
 
 ---

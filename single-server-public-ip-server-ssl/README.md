@@ -628,9 +628,9 @@ Nginx (port 80/443)
 
 ## Project Lead
 
-**MD Sarowar Alam**  
-Lead DevOps Engineer, WPP Production  
-📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)  
+**MD Sarowar Alam**<br>
+Lead DevOps Engineer, WPP Production<br>
+📧 Email: [sarowar@hotmail.com](mailto:sarowar@hotmail.com)<br>
 🔗 LinkedIn: https://www.linkedin.com/in/sarowar/
 
 ---
